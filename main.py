@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor, QFont, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -1194,6 +1194,22 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
 
+def get_app_icon() -> QIcon | None:
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "app.ico")
+        candidates.append(db.get_app_dir() / "app.ico")
+    else:
+        candidates.append(db.get_app_dir() / "app.ico")
+
+    for icon_path in candidates:
+        if icon_path.is_file():
+            return QIcon(str(icon_path))
+    return None
+
+
 def main() -> None:
     setup_logging()
     db.load_env()
@@ -1203,7 +1219,13 @@ def main() -> None:
     app.setStyle("Fusion")
     app.setStyleSheet(APP_STYLESHEET)
 
+    app_icon = get_app_icon()
+    if app_icon is not None:
+        app.setWindowIcon(app_icon)
+
     window = MainWindow()
+    if app_icon is not None:
+        window.setWindowIcon(app_icon)
     window.show()
 
     warnings = models.check_env_setup()
