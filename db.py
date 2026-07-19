@@ -47,6 +47,22 @@ DEFAULT_MODELS: list[dict[str, Any]] = [
         "model_type": "openai",
         "is_active": 0,
     },
+    {
+        "name": "OpenRouter GPT-4o Mini",
+        "api_url": "https://openrouter.ai/api/v1/chat/completions",
+        "api_id": "openai/gpt-4o-mini",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "model_type": "openrouter",
+        "is_active": 1,
+    },
+    {
+        "name": "OpenRouter DeepSeek Chat",
+        "api_url": "https://openrouter.ai/api/v1/chat/completions",
+        "api_id": "deepseek/deepseek-chat",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "model_type": "openrouter",
+        "is_active": 1,
+    },
 ]
 
 DEFAULT_SETTINGS: dict[str, str] = {
@@ -116,6 +132,8 @@ def init_db() -> None:
                 """,
                 DEFAULT_MODELS,
             )
+        else:
+            _ensure_seed_models(conn)
 
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute(
@@ -127,6 +145,22 @@ def init_db() -> None:
             )
 
         conn.commit()
+
+
+def _ensure_seed_models(conn: sqlite3.Connection) -> None:
+    for model in DEFAULT_MODELS:
+        exists = conn.execute(
+            "SELECT id FROM models WHERE name = ?",
+            (model["name"],),
+        ).fetchone()
+        if exists is None:
+            conn.execute(
+                """
+                INSERT INTO models (name, api_url, api_id, api_key_env, model_type, is_active)
+                VALUES (:name, :api_url, :api_id, :api_key_env, :model_type, :is_active)
+                """,
+                model,
+            )
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
