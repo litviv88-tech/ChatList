@@ -208,6 +208,15 @@ def delete_prompt(prompt_id: int) -> None:
         conn.commit()
 
 
+def update_prompt(prompt_id: int, text: str, tags: str | None = None) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE prompts SET text = ?, tags = ? WHERE id = ?",
+            (text.strip(), tags, prompt_id),
+        )
+        conn.commit()
+
+
 # --- models ---
 
 

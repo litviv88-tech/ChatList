@@ -116,6 +116,241 @@ class ResponseViewDialog(QDialog):
         self.setLayout(layout)
 
 
+class PromptEditDialog(QDialog):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        prompt_data: dict[str, Any] | None = None,
+        read_only: bool = False,
+    ) -> None:
+        super().__init__(parent)
+        if read_only:
+            self.setWindowTitle("Просмотр промта")
+        elif prompt_data:
+            self.setWindowTitle("Изменить промт")
+        else:
+            self.setWindowTitle("Создать промт")
+
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlaceholderText("Текст промта...")
+        self.text_edit.setMinimumHeight(120)
+
+        self.tags_edit = QLineEdit()
+        self.tags_edit.setPlaceholderText("Теги (необязательно, через запятую)")
+
+        if prompt_data:
+            self.text_edit.setPlainText(prompt_data["text"])
+            self.tags_edit.setText(prompt_data.get("tags") or "")
+
+        if read_only:
+            self.text_edit.setReadOnly(True)
+            self.tags_edit.setReadOnly(True)
+
+        form = QFormLayout()
+        form.addRow("Текст", self.text_edit)
+        form.addRow("Теги", self.tags_edit)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        if read_only:
+            buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Закрыть")
+            buttons.button(QDialogButtonBox.StandardButton.Cancel).hide()
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout()
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+
+    def get_data(self) -> dict[str, str | None]:
+        return {
+            "text": self.text_edit.toPlainText().strip(),
+            "tags": self.tags_edit.text().strip() or None,
+        }
+
+
+class PromptsDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Промты")
+        self.resize(920, 520)
+        self._parent_window = parent
+
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Поиск по тексту или тегам")
+        self.search_edit.textChanged.connect(self.load_prompts)
+
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["ID", "Дата", "Текст", "Теги"])
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.setWordWrap(True)
+        self.table.doubleClicked.connect(self.read_prompt)
+
+        self.create_button = QPushButton("Создать")
+        self.read_button = QPushButton("Просмотр")
+        self.update_button = QPushButton("Изменить")
+        self.delete_button = QPushButton("Удалить")
+        self.use_button = QPushButton("Выбрать")
+        self.refresh_button = QPushButton("Обновить")
+
+        self.create_button.setObjectName("primaryButton")
+        self.delete_button.setStyleSheet("QPushButton { color: #c53030; }")
+
+        top_layout = QHBoxLayout()
+        top_layout.addWidget(self.search_edit, stretch=1)
+        top_layout.addWidget(self.refresh_button)
+
+        crud_layout = QHBoxLayout()
+        crud_layout.addWidget(self.create_button)
+        crud_layout.addWidget(self.read_button)
+        crud_layout.addWidget(self.update_button)
+        crud_layout.addWidget(self.delete_button)
+        crud_layout.addWidget(self.use_button)
+        crud_layout.addStretch()
+
+        layout = QVBoxLayout()
+        layout.addLayout(top_layout)
+        layout.addWidget(self.table, stretch=1)
+        layout.addLayout(crud_layout)
+        self.setLayout(layout)
+
+        self.create_button.clicked.connect(self.create_prompt)
+        self.read_button.clicked.connect(self.read_prompt)
+        self.update_button.clicked.connect(self.update_prompt)
+        self.delete_button.clicked.connect(self.delete_prompt)
+        self.use_button.clicked.connect(self.use_prompt)
+        self.refresh_button.clicked.connect(self.load_prompts)
+
+        self.load_prompts()
+
+    def _selected_prompt(self) -> dict[str, Any] | None:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        if item is None:
+            return None
+        prompt_id = int(item.text())
+        return models.get_prompt(prompt_id)
+
+    def load_prompts(self) -> None:
+        search = self.search_edit.text().strip() or None
+        rows = models.get_prompts(search)
+
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            self.table.setItem(row_index, 0, QTableWidgetItem(str(row["id"])))
+            self.table.setItem(row_index, 1, QTableWidgetItem(row["created_at"]))
+
+            text_item = QTableWidgetItem(row["text"].replace("\n", " "))
+            text_item.setToolTip(row["text"])
+            text_item.setTextAlignment(
+                int(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            )
+            self.table.setItem(row_index, 2, text_item)
+            self.table.setItem(row_index, 3, QTableWidgetItem(row.get("tags") or ""))
+
+        self.table.resizeRowsToContents()
+        self.table.setSortingEnabled(True)
+
+    def _refresh_parent(self) -> None:
+        if isinstance(self._parent_window, MainWindow):
+            self._parent_window.load_prompts()
+
+    def create_prompt(self) -> None:
+        dialog = PromptEditDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        data = dialog.get_data()
+        if not data["text"]:
+            QMessageBox.warning(self, "Промт", "Введите текст промта")
+            return
+
+        try:
+            models.save_prompt(data["text"], data["tags"])
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать промт:\n{exc}")
+            return
+
+        self.load_prompts()
+        self._refresh_parent()
+
+    def read_prompt(self) -> None:
+        prompt = self._selected_prompt()
+        if prompt is None:
+            QMessageBox.information(self, "Промты", "Выберите промт в таблице")
+            return
+
+        dialog = PromptEditDialog(parent=self, prompt_data=prompt, read_only=True)
+        dialog.exec()
+
+    def update_prompt(self) -> None:
+        prompt = self._selected_prompt()
+        if prompt is None:
+            QMessageBox.information(self, "Промты", "Выберите промт в таблице")
+            return
+
+        dialog = PromptEditDialog(parent=self, prompt_data=prompt)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        data = dialog.get_data()
+        if not data["text"]:
+            QMessageBox.warning(self, "Промт", "Введите текст промта")
+            return
+
+        try:
+            models.update_prompt(prompt["id"], data["text"], data["tags"])
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось изменить промт:\n{exc}")
+            return
+
+        self.load_prompts()
+        self._refresh_parent()
+
+    def delete_prompt(self) -> None:
+        prompt = self._selected_prompt()
+        if prompt is None:
+            QMessageBox.information(self, "Промты", "Выберите промт в таблице")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Удаление",
+            "Удалить выбранный промт и связанные результаты?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            models.delete_prompt(prompt["id"])
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось удалить промт:\n{exc}")
+            return
+
+        self.load_prompts()
+        self._refresh_parent()
+
+    def use_prompt(self) -> None:
+        prompt = self._selected_prompt()
+        if prompt is None:
+            QMessageBox.information(self, "Промты", "Выберите промт в таблице")
+            return
+
+        if isinstance(self._parent_window, MainWindow):
+            self._parent_window.apply_prompt(prompt)
+        self.accept()
+
+
 class ModelsDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -473,6 +708,7 @@ class MainWindow(QMainWindow):
         menu_bar = self.menuBar()
 
         prompts_menu = menu_bar.addMenu("Промты")
+        prompts_menu.addAction("Управление промтами", self.open_prompts_dialog)
         prompts_menu.addAction("Обновить список", self.load_prompts)
         prompts_menu.addAction("Новый запрос", self.on_new_request)
 
@@ -495,8 +731,10 @@ class MainWindow(QMainWindow):
         prompt_select_layout = QHBoxLayout()
         prompt_select_layout.addWidget(QLabel("Сохранённые:"))
         self.prompt_combo = QComboBox()
+        self.prompts_button = QPushButton("Промты")
         self.refresh_prompts_button = QPushButton("Обновить")
         prompt_select_layout.addWidget(self.prompt_combo, stretch=1)
+        prompt_select_layout.addWidget(self.prompts_button)
         prompt_select_layout.addWidget(self.refresh_prompts_button)
 
         self.prompt_edit = QTextEdit()
@@ -568,6 +806,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.prompt_combo.currentIndexChanged.connect(self.on_prompt_selected)
+        self.prompts_button.clicked.connect(self.open_prompts_dialog)
         self.refresh_prompts_button.clicked.connect(self.load_prompts)
         self.send_button.clicked.connect(self.on_send_clicked)
         self.save_button.clicked.connect(self.on_save_clicked)
@@ -623,8 +862,16 @@ class MainWindow(QMainWindow):
             return
         prompt = models.get_prompt(int(prompt_id))
         if prompt:
-            self.prompt_edit.setPlainText(prompt["text"])
-            self.tags_edit.setText(prompt.get("tags") or "")
+            self.apply_prompt(prompt)
+
+    def apply_prompt(self, prompt: dict[str, Any]) -> None:
+        self.prompt_edit.setPlainText(prompt["text"])
+        self.tags_edit.setText(prompt.get("tags") or "")
+        index = self.prompt_combo.findData(prompt["id"])
+        if index >= 0:
+            self.prompt_combo.blockSignals(True)
+            self.prompt_combo.setCurrentIndex(index)
+            self.prompt_combo.blockSignals(False)
 
     def clear_results_table(self) -> None:
         self.results_table.setRowCount(0)
@@ -777,6 +1024,10 @@ class MainWindow(QMainWindow):
         self.prompt_combo.setCurrentIndex(0)
         self.clear_results_table()
         self.set_status("Готово к работе")
+
+    def open_prompts_dialog(self) -> None:
+        dialog = PromptsDialog(self)
+        dialog.exec()
 
     def open_models_dialog(self) -> None:
         dialog = ModelsDialog(self)

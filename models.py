@@ -91,6 +91,10 @@ def delete_prompt(prompt_id: int) -> None:
     db.delete_prompt(prompt_id)
 
 
+def update_prompt(prompt_id: int, text: str, tags: str | None = None) -> None:
+    db.update_prompt(prompt_id, text, tags)
+
+
 def get_all_models() -> list[dict[str, Any]]:
     return db.get_models(active_only=False)
 
