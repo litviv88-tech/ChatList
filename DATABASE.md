@@ -178,6 +178,9 @@ CREATE TABLE IF NOT EXISTS settings (
 | `max_response_chars` | `8000`         | Макс. длина отображаемого ответа  |
 | `theme`              | `light`        | Тема интерфейса                   |
 | `last_prompt_id`     | `3`            | ID последнего использованного промта |
+| `assistant_model_id` | `4`            | ID модели OpenRouter для AI-ассистента |
+| `assistant_enabled`  | `1`            | `1` — ассистент включён, `0` — отключён |
+| `assistant_task_type`| `general`      | Тип задачи: `general`, `code`, `analysis`, `creative` |
 
 ---
 

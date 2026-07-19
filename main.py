@@ -21,6 +21,8 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -35,6 +37,7 @@ from PyQt6.QtWidgets import (
 import db
 import models
 from logger import setup_logging
+from prompt_assistant import TASK_TYPES, PromptImprovement
 from ui_helpers import (
     APP_STYLESHEET,
     is_error_response,
@@ -71,6 +74,110 @@ class SendPromptWorker(QThread):
             self.failed.emit(error)
         else:
             self.finished.emit(results, None)
+
+
+class ImprovePromptWorker(QThread):
+    finished = pyqtSignal(object, object)
+
+    def __init__(self, prompt_text: str, task_type: str) -> None:
+        super().__init__()
+        self.prompt_text = prompt_text
+        self.task_type = task_type
+
+    def run(self) -> None:
+        result, error = models.improve_user_prompt(self.prompt_text, self.task_type)
+        if error:
+            self.finished.emit(None, error)
+        else:
+            self.finished.emit(result, None)
+
+
+class PromptAssistantDialog(QDialog):
+    def __init__(
+        self,
+        improvement: PromptImprovement,
+        task_type_label: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("AI-ассистент — улучшение промта")
+        self.resize(760, 620)
+        self._selected_text = improvement.improved
+
+        task_label = QLabel(f"Тип задачи: {task_type_label}")
+        task_label.setObjectName("sectionTitle")
+
+        original_title = QLabel("Исходный промт")
+        original_title.setObjectName("sectionTitle")
+        original_view = QTextEdit()
+        original_view.setReadOnly(True)
+        original_view.setPlainText(improvement.original)
+        original_view.setMaximumHeight(100)
+
+        improved_title = QLabel("Улучшенный промт")
+        improved_title.setObjectName("sectionTitle")
+        self.improved_view = QTextEdit()
+        self.improved_view.setReadOnly(True)
+        self.improved_view.setPlainText(improvement.improved)
+        self.improved_view.setStyleSheet("color: #2f855a;")
+        self.improved_view.setMinimumHeight(120)
+
+        alternatives_title = QLabel("Альтернативы")
+        alternatives_title.setObjectName("sectionTitle")
+        self.alternatives_list = QListWidget()
+        for alternative in improvement.alternatives:
+            self.alternatives_list.addItem(QListWidgetItem(alternative))
+        self.alternatives_list.currentRowChanged.connect(self._on_alternative_selected)
+
+        notes_label = QLabel(improvement.notes or "Комментарий ассистента отсутствует.")
+        notes_label.setWordWrap(True)
+
+        apply_improved_button = QPushButton("Подставить улучшенный")
+        apply_improved_button.setObjectName("primaryButton")
+        apply_selected_button = QPushButton("Подставить выбранный")
+        close_button = QPushButton("Закрыть")
+
+        apply_improved_button.clicked.connect(self._apply_improved)
+        apply_selected_button.clicked.connect(self._apply_selected)
+        close_button.clicked.connect(self.reject)
+
+        buttons = QHBoxLayout()
+        buttons.addWidget(apply_improved_button)
+        buttons.addWidget(apply_selected_button)
+        buttons.addStretch()
+        buttons.addWidget(close_button)
+
+        layout = QVBoxLayout()
+        layout.addWidget(task_label)
+        layout.addWidget(original_title)
+        layout.addWidget(original_view)
+        layout.addWidget(improved_title)
+        layout.addWidget(self.improved_view)
+        layout.addWidget(alternatives_title)
+        layout.addWidget(self.alternatives_list)
+        layout.addWidget(notes_label)
+        layout.addLayout(buttons)
+        self.setLayout(layout)
+
+    def _on_alternative_selected(self, row: int) -> None:
+        item = self.alternatives_list.item(row)
+        if item is not None:
+            self._selected_text = item.text()
+
+    def _apply_improved(self) -> None:
+        self._selected_text = self.improved_view.toPlainText()
+        self.accept()
+
+    def _apply_selected(self) -> None:
+        current_item = self.alternatives_list.currentItem()
+        if current_item is None:
+            QMessageBox.information(self, "Ассистент", "Выберите альтернативу в списке")
+            return
+        self._selected_text = current_item.text()
+        self.accept()
+
+    def selected_text(self) -> str:
+        return self._selected_text
 
 
 class ResponseViewDialog(QDialog):
@@ -693,6 +800,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ChatList — Сравнение ответов нейросетей")
         self.resize(1180, 760)
         self.worker: SendPromptWorker | None = None
+        self.improve_worker: ImprovePromptWorker | None = None
         self._result_rows: list[dict[str, Any]] = []
 
         self._build_menu()
@@ -746,8 +854,15 @@ class MainWindow(QMainWindow):
         self.tags_edit.setPlaceholderText("Теги (необязательно, через запятую)")
 
         send_layout = QHBoxLayout()
+        self.task_type_combo = QComboBox()
+        for key, label in TASK_TYPES.items():
+            self.task_type_combo.addItem(label, key)
+        self.improve_button = QPushButton("Улучшить промт")
         self.send_button = QPushButton("Отправить")
         self.send_button.setObjectName("primaryButton")
+        send_layout.addWidget(QLabel("Тип:"))
+        send_layout.addWidget(self.task_type_combo)
+        send_layout.addWidget(self.improve_button)
         send_layout.addWidget(self.send_button)
         send_layout.addStretch()
 
@@ -808,12 +923,18 @@ class MainWindow(QMainWindow):
         self.prompt_combo.currentIndexChanged.connect(self.on_prompt_selected)
         self.prompts_button.clicked.connect(self.open_prompts_dialog)
         self.refresh_prompts_button.clicked.connect(self.load_prompts)
+        self.improve_button.clicked.connect(self.on_improve_clicked)
         self.send_button.clicked.connect(self.on_send_clicked)
         self.save_button.clicked.connect(self.on_save_clicked)
         self.open_button.clicked.connect(self.open_selected_response)
         self.clear_button.clicked.connect(self.on_new_request)
         self.models_button.clicked.connect(self.open_models_dialog)
         self.history_button.clicked.connect(self.open_history_dialog)
+
+        saved_task_type = models.get_assistant_task_type()
+        task_index = self.task_type_combo.findData(saved_task_type)
+        if task_index >= 0:
+            self.task_type_combo.setCurrentIndex(task_index)
 
     def set_status(self, message: str, success: bool = False) -> None:
         self.status_bar.showMessage(message)
@@ -824,6 +945,7 @@ class MainWindow(QMainWindow):
 
     def set_busy(self, busy: bool, message: str = "") -> None:
         self.send_button.setEnabled(not busy)
+        self.improve_button.setEnabled(not busy)
         self.save_button.setEnabled(not busy)
         self.open_button.setEnabled(not busy)
         self.clear_button.setEnabled(not busy)
@@ -938,6 +1060,40 @@ class MainWindow(QMainWindow):
 
     def on_checkbox_changed(self, index: int, state: int) -> None:
         models.update_temp_selection(index, state == int(Qt.CheckState.Checked))
+
+    def on_improve_clicked(self) -> None:
+        prompt_text = self.prompt_edit.toPlainText().strip()
+        if not prompt_text:
+            QMessageBox.warning(self, "Промт", "Введите текст промта")
+            return
+
+        task_type = self.task_type_combo.currentData() or "general"
+        self.set_busy(True, "Улучшение промта...")
+        self.improve_worker = ImprovePromptWorker(prompt_text, str(task_type))
+        self.improve_worker.finished.connect(self.on_improve_finished)
+        self.improve_worker.start()
+
+    def on_improve_finished(self, result: object, error: object) -> None:
+        self.set_busy(False)
+        if error:
+            self.set_status("Ошибка улучшения промта")
+            QMessageBox.warning(self, "AI-ассистент", str(error))
+            return
+
+        if not isinstance(result, PromptImprovement):
+            self.set_status("Ошибка улучшения промта")
+            QMessageBox.warning(self, "AI-ассистент", "Не удалось получить результат ассистента")
+            return
+
+        task_type = self.task_type_combo.currentData() or "general"
+        task_label = TASK_TYPES.get(str(task_type), "Общая задача")
+        dialog = PromptAssistantDialog(result, task_label, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.set_status("Улучшение промта отменено")
+            return
+
+        self.prompt_edit.setPlainText(dialog.selected_text())
+        self.set_status("Промт обновлён ассистентом", success=True)
 
     def on_send_clicked(self) -> None:
         prompt_text = self.prompt_edit.toPlainText().strip()

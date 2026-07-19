@@ -41,11 +41,11 @@ def _get_timeout() -> float:
         return 60.0
 
 
-def _send_openai_compatible(
+def _send_chat_messages(
     api_url: str,
     api_id: str,
     api_key: str,
-    prompt_text: str,
+    messages: list[dict[str, str]],
     timeout: float,
     extra_headers: dict[str, str] | None = None,
 ) -> str:
@@ -58,7 +58,7 @@ def _send_openai_compatible(
 
     payload = {
         "model": api_id,
-        "messages": [{"role": "user", "content": prompt_text}],
+        "messages": messages,
     }
 
     logger.info("Запрос к %s, модель %s", api_url, api_id)
@@ -87,6 +87,24 @@ def _send_openai_compatible(
         return content
     except (KeyError, IndexError, TypeError) as exc:
         raise NetworkError("Не удалось разобрать ответ API") from exc
+
+
+def _send_openai_compatible(
+    api_url: str,
+    api_id: str,
+    api_key: str,
+    prompt_text: str,
+    timeout: float,
+    extra_headers: dict[str, str] | None = None,
+) -> str:
+    return _send_chat_messages(
+        api_url=api_url,
+        api_id=api_id,
+        api_key=api_key,
+        messages=[{"role": "user", "content": prompt_text}],
+        timeout=timeout,
+        extra_headers=extra_headers,
+    )
 
 
 def _send_openrouter(
@@ -177,3 +195,51 @@ def send_prompts_parallel(
 
     results.sort(key=lambda item: item["model_name"].lower())
     return results
+
+
+def send_chat_completion(model_row: dict[str, Any], messages: list[dict[str, str]]) -> str:
+    model_type = model_row.get("model_type", "openai")
+    timeout = _get_timeout()
+
+    try:
+        api_key = get_api_key(model_row["api_key_env"])
+    except NetworkError as exc:
+        raise exc
+
+    extra_headers = None
+    if model_type == "openrouter":
+        extra_headers = {
+            "HTTP-Referer": "https://github.com/litviv88-tech/ChatList",
+            "X-Title": "ChatList",
+        }
+
+    if model_type in {"openai", "deepseek", "groq", "openrouter"}:
+        return _send_chat_messages(
+            api_url=model_row["api_url"],
+            api_id=model_row["api_id"],
+            api_key=api_key,
+            messages=messages,
+            timeout=timeout,
+            extra_headers=extra_headers,
+        )
+
+    raise NetworkError(f"Неподдерживаемый тип модели: {model_type}")
+
+
+def improve_prompt_request(
+    model_row: dict[str, Any],
+    user_prompt: str,
+    system_prompt: str,
+) -> str:
+    logger.info("Запрос ассистента улучшения промта через %s", model_row.get("name"))
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    try:
+        return send_chat_completion(model_row, messages)
+    except NetworkError:
+        raise
+    except Exception as exc:
+        logger.exception("Ошибка ассистента улучшения промта")
+        raise NetworkError(f"Неожиданная ошибка ассистента: {exc}") from exc

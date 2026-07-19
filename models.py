@@ -11,6 +11,12 @@ from typing import Any
 import db
 import network
 from logger import get_logger
+from prompt_assistant import (
+    PromptAssistantError,
+    PromptImprovement,
+    build_system_prompt,
+    parse_assistant_response,
+)
 
 logger = get_logger("chatlist.models")
 
@@ -121,6 +127,66 @@ def get_settings() -> dict[str, str | None]:
 
 def set_setting(key: str, value: str) -> None:
     db.set_setting(key, value)
+
+
+def get_assistant_model() -> dict[str, Any] | None:
+    model_id = db.get_setting("assistant_model_id")
+    if model_id:
+        model = db.get_model(int(model_id))
+        if model is not None:
+            return model
+
+    for model in db.get_models(active_only=False):
+        if model.get("model_type") == "openrouter":
+            set_assistant_model(model["id"])
+            return model
+    return None
+
+
+def set_assistant_model(model_id: int) -> None:
+    db.set_setting("assistant_model_id", str(model_id))
+
+
+def get_assistant_task_type() -> str:
+    value = db.get_setting("assistant_task_type", "general")
+    return value or "general"
+
+
+def set_assistant_task_type(task_type: str) -> None:
+    db.set_setting("assistant_task_type", task_type)
+
+
+def improve_user_prompt(
+    text: str,
+    task_type: str | None = None,
+) -> tuple[PromptImprovement | None, str | None]:
+    prompt_text = text.strip()
+    if not prompt_text:
+        return None, "Введите текст промта"
+
+    if db.get_setting("assistant_enabled", "1") != "1":
+        return None, "AI-ассистент отключён в настройках"
+
+    model = get_assistant_model()
+    if model is None:
+        return None, "Не найдена модель для AI-ассистента. Добавьте модель OpenRouter."
+
+    selected_task_type = task_type or get_assistant_task_type()
+    system_prompt = build_system_prompt(selected_task_type)
+
+    try:
+        raw_response = network.improve_prompt_request(model, prompt_text, system_prompt)
+    except network.NetworkError as exc:
+        return None, str(exc)
+
+    try:
+        result = parse_assistant_response(prompt_text, raw_response)
+    except PromptAssistantError as exc:
+        return None, str(exc)
+
+    set_assistant_task_type(selected_task_type)
+    logger.info("Промт улучшен ассистентом через модель %s", model.get("name"))
+    return result, None
 
 
 def get_saved_results(search: str | None = None) -> list[dict[str, Any]]:

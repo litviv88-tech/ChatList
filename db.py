@@ -69,6 +69,8 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "request_timeout": "60",
     "max_response_chars": "8000",
     "theme": "light",
+    "assistant_enabled": "1",
+    "assistant_task_type": "general",
 }
 
 
@@ -144,7 +146,24 @@ def init_db() -> None:
                 (key, value),
             )
 
+        _ensure_assistant_settings(conn)
+
         conn.commit()
+
+
+def _ensure_assistant_settings(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT id FROM models WHERE name = ?",
+        ("OpenRouter GPT-4o Mini",),
+    ).fetchone()
+    if row is not None:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO settings (key, value)
+            VALUES ('assistant_model_id', ?)
+            """,
+            (str(row["id"]),),
+        )
 
 
 def _ensure_seed_models(conn: sqlite3.Connection) -> None:
